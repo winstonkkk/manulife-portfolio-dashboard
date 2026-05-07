@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+
+  # ── Backend (Express API) ────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: portfolio_backend
+    environment:
+      - JWT_SECRET=super-secret-key-2026
+      - PORT=5000
+    volumes:
+      - backend_data:/app     # persist the SQLite .db file
+    networks:
+      - portfolio_net
+    restart: unless-stopped
+
+  # ── Frontend (React + Nginx) ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: portfolio_frontend
+    ports:
+      - "3000:80"             # visit http://localhost:3000
+    depends_on:
+      - backend               # ensure backend starts first
+    networks:
+      - portfolio_net
+    restart: unless-stopped
+
+networks:
+  portfolio_net:
+    driver: bridge
+
+volumes:
+  backend_data:               # named volume keeps portfolio.db between restarts

@@ -1,12 +1,10 @@
 const Database = require("better-sqlite3");
 const path     = require("path");
 
-// Open (or create) the SQLite database file
 const db = new Database(path.join(__dirname, "portfolio.db"));
 
 db.pragma("journal_mode = WAL");
 
-// users table – stores registered accounts
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,22 +15,21 @@ db.exec(`
   )
 `);
 
-// investments table – one row per asset held by a user
 db.exec(`
   CREATE TABLE IF NOT EXISTS investments (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id        INTEGER NOT NULL REFERENCES users(id),
     name           TEXT NOT NULL,
     ticker         TEXT NOT NULL,
-    asset_type     TEXT NOT NULL CHECK (asset_type IN ('stock','bond','mutual_fund')),
+    asset_type     TEXT NOT NULL DEFAULT 'other',
     quantity       REAL NOT NULL,
     purchase_price REAL NOT NULL,
     current_price  REAL NOT NULL,
+    target_weight  REAL NOT NULL DEFAULT 0,
     purchase_date  TEXT DEFAULT (date('now'))
   )
 `);
 
-// transactions table – audit trail of every buy / sell
 db.exec(`
   CREATE TABLE IF NOT EXISTS transactions (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

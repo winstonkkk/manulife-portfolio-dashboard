@@ -1,46 +1,38 @@
-// ─────────────────────────────────────────────────────────────
-// server.js  –  Express app entry point
-//
-// This file:
-//   1. Loads environment variables (.env)
-//   2. Creates the Express app
-//   3. Registers global middleware (CORS, JSON parsing)
-//   4. Mounts the route modules under /api/...
-//   5. Starts listening on a port
-// ─────────────────────────────────────────────────────────────
-
-require("dotenv").config();              // load .env variables (e.g. JWT_SECRET, PORT)
+require("dotenv").config();
 
 const express = require("express");
-const cors    = require("cors");
+const cors = require("cors");
+const db = require("./database");
+const verifyToken = require("./middleware/auth");
 
-const authRouter         = require("./routes/auth");
-const portfolioRouter    = require("./routes/portfolio");
+const authRouter = require("./routes/auth");
+const portfolioRouter = require("./routes/portfolio");
 const transactionsRouter = require("./routes/transactions");
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ── Global middleware ─────────────────────────────────────────
-
-// Allow requests from the React frontend (different port in dev)
 app.use(cors());
-
-// Parse incoming JSON request bodies
 app.use(express.json());
 
-// ── Route mounting ────────────────────────────────────────────
+// Routes
+app.use("/api/auth", authRouter);
+app.use("/api/portfolio", portfolioRouter);
+app.use("/api/transactions", transactionsRouter);
 
-app.use("/api/auth",         authRouter);         // /api/auth/register, /login, /me
-app.use("/api/portfolio",    portfolioRouter);     // /api/portfolio  (CRUD investments)
-app.use("/api/transactions", transactionsRouter);  // /api/transactions
-
-// Health check – useful to confirm the container is running
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+// POST /api/price/refresh-all
+app.post("/api/price/refresh-all", verifyToken, (req, res) => {
+    const result = db.prepare(
+        "SELECT COUNT(*) as count FROM investments WHERE user_id = ?"
+    ).get(req.user.id);
+    res.json({ count: result.count, message: "Prices refreshed" });
 });
 
-// ── Start server ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`Backend API running on http://localhost:${PORT}`);
-});
+// Health check
+app.get("/api/health", (req, res) =>
+    res.json({ status: "ok", timestamp: new Date().toISOString() })
+);
+
+app.listen(PORT, () =>
+    console.log(`Backend API running on http://localhost:${PORT}`)
+);

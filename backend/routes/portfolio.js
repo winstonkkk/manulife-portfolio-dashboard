@@ -1,75 +1,104 @@
-const express = require("express");
+﻿const express = require("express");
 const db      = require("../database");
 const verify  = require("../middleware/auth");
 
 const router = express.Router();
 
-// All routes require a valid JWT
 router.use(verify);
 
-// Helper: round to 2 decimal places
 function round(n) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 // GET /api/portfolio
-// Returns all investments + portfolio-level summary for the logged-in user.
 router.get("/", (req, res) => {
   const investments = db.prepare(
     "SELECT * FROM investments WHERE user_id = ? ORDER BY id DESC"
   ).all(req.user.id);
 
-  // Calculate per-investment performance metrics
   const enriched = investments.map((inv) => {
-    const totalValue  = inv.current_price  * inv.quantity;
-    const totalCost   = inv.purchase_price * inv.quantity;
-    const gainLoss    = totalValue - totalCost;
-    const gainLossPct = totalCost > 0 ? (gainLoss / totalCost) * 100 : 0;
+    const value       = round(inv.current_price * inv.quantity);
+    const totalCost   = round(inv.purchase_price * inv.quantity);
+    const gainLoss    = round(value - totalCost);
+    const gainLossPct = totalCost > 0 ? round((gainLoss / totalCost) * 100) : 0;
     return {
       ...inv,
-      total_value:   round(totalValue),
-      total_cost:    round(totalCost),
-      gain_loss:     round(gainLoss),
-      gain_loss_pct: round(gainLossPct),
+      asset_class:   inv.asset_type,
+      value,
+      total_cost:    totalCost,
+      gain_loss:     gainLoss,
+      gain_loss_pct: gainLossPct,
     };
   });
 
-  // Portfolio-level summary
-  const totalValue = enriched.reduce((sum, i) => sum + i.total_value, 0);
-  const totalCost  = enriched.reduce((sum, i) => sum + i.total_cost,  0);
-  const gainLoss   = totalValue - totalCost;
-  const returnPct  = totalCost > 0 ? (gainLoss / totalCost) * 100 : 0;
+  const totalValue = enriched.reduce((sum, i) => sum + i.value,     0);
+  const totalCost  = enriched.reduce((sum, i) => sum + i.total_cost, 0);
+  const gainLoss   = round(totalValue - totalCost);
+  const returnPct  = totalCost > 0 ? round((gainLoss / totalCost) * 100) : 0;
 
   res.json({
     summary: {
       total_value: round(totalValue),
       total_cost:  round(totalCost),
-      gain_loss:   round(gainLoss),
-      return_pct:  round(returnPct),
+      gain_loss:   gainLoss,
+      return_pct:  returnPct,
     },
     investments: enriched,
   });
 });
 
-// POST /api/portfolio
-// Adds a new investment and records an initial "buy" transaction.
-router.post("/", (req, res) => {
-  const { name, ticker, asset_type, quantity, purchase_price, current_price } = req.body;
+// GET /api/portfolio/history
+router.get("/history", (req, res) => {
+  const investments = db.prepare(
+    "SELECT current_price, quantity FROM investments WHERE user_id = ?"
+  ).all(req.user.id);
 
-  if (!name || !ticker || !asset_type || !quantity || !purchase_price || !current_price) {
+  if (investments.length === 0) return res.json([]);
+
+  const totalValue = investments.reduce(
+    (sum, inv) => sum + inv.current_price * inv.quantity, 0
+  );
+
+  res.json([{
+    timestamp:   new Date().toISOString(),
+    total_value: round(totalValue),
+  }]);
+});
+
+// POST /api/portfolio
+router.post("/", (req, res) => {
+  const {
+    name,
+    ticker,
+    quantity,
+    purchase_price,
+    current_price,
+    asset_type,
+    asset_class,
+    target_weight,
+  } = req.body;
+
+
+  const finalAssetType = asset_type || asset_class || "other";
+
+  if (!name || !ticker || !quantity || !purchase_price || !current_price) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
-  if (!["stock", "bond", "mutual_fund"].includes(asset_type)) {
-    return res.status(400).json({ error: "asset_type must be stock, bond or mutual_fund" });
+
+  let result;
+  try {
+    result = db.prepare(`
+      INSERT INTO investments (user_id, name, ticker, asset_type, quantity, purchase_price, current_price, target_weight)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, name, ticker, finalAssetType, quantity, purchase_price, current_price, target_weight || 0);
+  } catch {
+    result = db.prepare(`
+      INSERT INTO investments (user_id, name, ticker, asset_type, quantity, purchase_price, current_price)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, name, ticker, finalAssetType, quantity, purchase_price, current_price);
   }
 
-  const result = db.prepare(`
-    INSERT INTO investments (user_id, name, ticker, asset_type, quantity, purchase_price, current_price)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(req.user.id, name, ticker, asset_type, quantity, purchase_price, current_price);
-
-  // Record the initial buy as a transaction for the audit trail
   db.prepare(`
     INSERT INTO transactions (user_id, investment_id, transaction_type, quantity, price)
     VALUES (?, ?, 'buy', ?, ?)
@@ -80,7 +109,6 @@ router.post("/", (req, res) => {
 });
 
 // PUT /api/portfolio/:id
-// Updates name, ticker, quantity, or current_price of an investment.
 router.put("/:id", (req, res) => {
   const inv = db.prepare(
     "SELECT * FROM investments WHERE id = ? AND user_id = ?"
@@ -92,17 +120,25 @@ router.put("/:id", (req, res) => {
   const ticker        = req.body.ticker        ?? inv.ticker;
   const quantity      = req.body.quantity      ?? inv.quantity;
   const current_price = req.body.current_price ?? inv.current_price;
+  const asset_type    = req.body.asset_type || req.body.asset_class || inv.asset_type;
+  const target_weight = req.body.target_weight ?? inv.target_weight;
 
-  db.prepare(`
-    UPDATE investments SET name=?, ticker=?, quantity=?, current_price=?
-    WHERE id=? AND user_id=?
-  `).run(name, ticker, quantity, current_price, req.params.id, req.user.id);
+  try {
+    db.prepare(`
+      UPDATE investments SET name=?, ticker=?, asset_type=?, quantity=?, current_price=?, target_weight=?
+      WHERE id=? AND user_id=?
+    `).run(name, ticker, asset_type, quantity, current_price, target_weight || 0, req.params.id, req.user.id);
+  } catch {
+    db.prepare(`
+      UPDATE investments SET name=?, ticker=?, asset_type=?, quantity=?, current_price=?
+      WHERE id=? AND user_id=?
+    `).run(name, ticker, asset_type, quantity, current_price, req.params.id, req.user.id);
+  }
 
   res.json(db.prepare("SELECT * FROM investments WHERE id=?").get(req.params.id));
 });
 
 // DELETE /api/portfolio/:id
-// Removes an investment and its related transactions.
 router.delete("/:id", (req, res) => {
   const inv = db.prepare(
     "SELECT * FROM investments WHERE id=? AND user_id=?"
